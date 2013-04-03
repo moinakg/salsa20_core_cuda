@@ -15,6 +15,7 @@ make CUDA_PATH=/path/to/cuda/toolkit
 The following executable binaries will be generated:
 
 vecCrypt - Standard single-stream GPU based Salsa20 encryption code.
+
 vecCrypt_strm - CUDA Streams based overlapped copy and execute version using
                 2 streams.
 
