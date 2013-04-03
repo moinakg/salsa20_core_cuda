@@ -48,7 +48,8 @@
 #define XSALSA20_BLOCKSZ 64
 #define CTR_INBLOCK_SZ (16)
 #define CTR_KS_SZ (XSALSA20_BLOCKSZ)
-#define BLOCKS_PER_CHUNK 4
+#define BLOCKS_PER_CHUNK_1X 4
+#define BLOCKS_PER_CHUNK_2X 1
 
 extern "C" int crypto_stream_salsa20_amd64_xmm6_xor(unsigned char *c, unsigned char *m,
 		unsigned long long mlen, unsigned char *n, unsigned char *k);
@@ -248,7 +249,7 @@ inline void __getLastCudaError(const char *errorMessage, const char *file, const
 
 
 // Device code
-__global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uint64_t p_nonce)
+__global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uint64_t p_nonce, int blks_per_chunk)
 {
     uint64_t i = THREADS_PER_BLOCK * blockIdx.x + threadIdx.x;
 
@@ -259,8 +260,8 @@ __global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uin
         uint32_t j0, j1, j2, j3, j4, j5, j6, j7, j8, j9, j10, j11, j12, j13, j14, j15;
         uint64_t blockno;
 
-        blockno = i*BLOCKS_PER_CHUNK;
-        tot = (nblocks - blockno > BLOCKS_PER_CHUNK) ? BLOCKS_PER_CHUNK:(nblocks - blockno);
+        blockno = i*blks_per_chunk;
+        tot = (nblocks - blockno > blks_per_chunk) ? blks_per_chunk:(nblocks - blockno);
 
         for (k = 0; k < tot; k++) {
             j0 = x0 = load_littleendian(sigma + 0);
@@ -442,16 +443,22 @@ int main(int argc, char** argv)
 {
     printf("Vector Encryption\n");
     unsigned int NBLKS = 4000000, N;
-    int rv;
+    int rv, blks_per_chunk;
     size_t size, i;
     unsigned char k[32];
     double gpuTime1, gpuTime2, cpuTime1, cpuTime2, strt, en;
     uint64_t v_nonce;
+    cudaDeviceProp deviceProp;
 
     ParseArguments(argc, argv);
+    cudaGetDeviceProperties(&deviceProp, 0);
+    if (deviceProp.major >= 2)
+        blks_per_chunk = BLOCKS_PER_CHUNK_2X;
+    else
+        blks_per_chunk = BLOCKS_PER_CHUNK_1X;
 
-    N = NBLKS / BLOCKS_PER_CHUNK;
-    if (NBLKS % BLOCKS_PER_CHUNK) N++;
+    N = NBLKS / blks_per_chunk;
+    if (NBLKS % blks_per_chunk) N++;
     size = NBLKS * XSALSA20_BLOCKSZ;
 
     // Allocate input vectors h_A and h_B in host memory
@@ -495,7 +502,7 @@ int main(int argc, char** argv)
     // Invoke kernel
     int threadsPerBlock = THREADS_PER_BLOCK;
     int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
-    VecCrypt<<<blocksPerGrid, threadsPerBlock>>>(d_A, N, NBLKS, v_nonce);
+    VecCrypt<<<blocksPerGrid, threadsPerBlock>>>(d_A, N, NBLKS, v_nonce, blks_per_chunk);
     getLastCudaError("kernel launch failure");
     checkCudaErrors( cudaDeviceSynchronize() );
 
