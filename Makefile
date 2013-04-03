@@ -130,16 +130,15 @@ stream.o: stream.s
 
 vecCrypt: vecCrypt.o stream.o
 	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS)
-	mkdir -p ../../bin/$(OSLOWER)/$(TARGET)
-	cp $@ ../../bin/$(OSLOWER)/$(TARGET)
 
 vecCrypt_strm: vecCrypt_strm.o stream.o
 	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS)
-	mkdir -p ../../bin/$(OSLOWER)/$(TARGET)
-	cp $@ ../../bin/$(OSLOWER)/$(TARGET)
 
 run: build
 	./vecCrypt
 
 clean:
 	rm -f vecCrypt vecCrypt.o 
+	rm -f vecCrypt_strm vecCrypt_strm.o 
+	rm -f stream.o
+
