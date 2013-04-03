@@ -117,15 +117,23 @@ endif
 # Target rules
 all: build
 
-build: vecCrypt
+build: vecCrypt vecCrypt_strm
 
 vecCrypt.o: vecCrypt.cu
+	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
+
+vecCrypt_strm.o: vecCrypt_strm.cu
 	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
 
 stream.o: stream.s
 	gcc -c stream.s
 
 vecCrypt: vecCrypt.o stream.o
+	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS)
+	mkdir -p ../../bin/$(OSLOWER)/$(TARGET)
+	cp $@ ../../bin/$(OSLOWER)/$(TARGET)
+
+vecCrypt_strm: vecCrypt_strm.o stream.o
 	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS)
 	mkdir -p ../../bin/$(OSLOWER)/$(TARGET)
 	cp $@ ../../bin/$(OSLOWER)/$(TARGET)

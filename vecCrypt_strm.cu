@@ -249,7 +249,7 @@ inline void __getLastCudaError(const char *errorMessage, const char *file, const
 
 
 // Device code
-__global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uint64_t p_nonce, int blks_per_chunk)
+__global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uint64_t p_nonce, int blks_per_chunk, uint64_t blkoff)
 {
     uint64_t i = THREADS_PER_BLOCK * blockIdx.x + threadIdx.x;
 
@@ -258,7 +258,7 @@ __global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uin
         uint32_t *mem;
         uint32_t x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15;
         uint32_t j0, j1, j2, j3, j4, j5, j6, j7, j8, j9, j10, j11, j12, j13, j14, j15;
-        uint64_t blockno;
+        uint64_t blockno, adj_blockno;
 
         blockno = i*blks_per_chunk;
         tot = (nblocks - blockno > blks_per_chunk) ? blks_per_chunk:(nblocks - blockno);
@@ -271,10 +271,11 @@ __global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uin
             j4 = x4 = load_littleendian(key + 12);
             j5 = x5 = load_littleendian(sigma + 4);
 
+            adj_blockno = blockno + blkoff;
             j6 = x6 = p_nonce;
             j7 = x7 = p_nonce >> 32;
-            j8 = x8 = blockno;
-            j9 = x9 = blockno >> 32;
+            j8 = x8 = adj_blockno;
+            j9 = x9 = adj_blockno >> 32;
 
             j10 = x10 = load_littleendian(sigma + 8);
             j11 = x11 = load_littleendian(key + 16);
@@ -442,13 +443,14 @@ get_mb_s(uint64_t bytes, double diff)
 int main(int argc, char** argv)
 {
     printf("Salsa20 Vector Encryption\n");
-    unsigned int NBLKS = 4000000, N;
-    int rv, blks_per_chunk;
-    size_t size, i;
+    unsigned int NBLKS = 4000000, N, N1, N2;
+    int rv, blks_per_chunk, threadsPerBlock, blocksPerGrid;
+    size_t size, i, sz1, sz2, sz1_bytes;
     unsigned char k[32];
-    double gpuTime1, gpuTime2, cpuTime1, cpuTime2, strt, en;
+    double gpuTime1, cpuTime1, cpuTime2, strt, en;
     uint64_t v_nonce;
     cudaDeviceProp deviceProp;
+    cudaStream_t strm1, strm2;
 
     ParseArguments(argc, argv);
     cudaGetDeviceProperties(&deviceProp, 0);
@@ -460,6 +462,13 @@ int main(int argc, char** argv)
     N = NBLKS / blks_per_chunk;
     if (NBLKS % blks_per_chunk) N++;
     size = NBLKS * XSALSA20_BLOCKSZ;
+
+    checkCudaErrors( cudaStreamCreate(&strm1) );
+    checkCudaErrors( cudaStreamCreate(&strm2) );
+    sz1 = NBLKS/2;
+    sz2 = NBLKS - sz1;
+    N1 = N/2;
+    N2 = N - N1;
 
     // Allocate input vectors h_A and h_B in host memory
     pinned = 1;
@@ -484,40 +493,29 @@ int main(int argc, char** argv)
     checkCudaErrors( cudaMalloc((void**)&d_A, size) );
 
     // Copy vectors from host memory to device memory
-    printf("Copying buffer to device\n");
+    printf("Starting GPU Calls\n");
 
     strt = get_wtime_millis();
-    checkCudaErrors( cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice) );
     checkCudaErrors( cudaMemcpyToSymbol(key, k, XSALSA20_CRYPTO_KEYBYTES, 0, cudaMemcpyHostToDevice) );
     checkCudaErrors( cudaMemcpyToSymbol(sigma, hsigma, 16, 0, cudaMemcpyHostToDevice) );
     v_nonce = load_littleendian64(h_nonce);
+    threadsPerBlock = THREADS_PER_BLOCK;
+    sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
+
+    checkCudaErrors( cudaMemcpyAsync(d_A, h_A, sz1_bytes, cudaMemcpyHostToDevice, strm1) );
+    blocksPerGrid = (N1 + threadsPerBlock - 1) / threadsPerBlock;
+    VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm1>>>(d_A, N1, sz1, v_nonce, blks_per_chunk, 0);
+    checkCudaErrors( cudaMemcpyAsync(d_A + sz1_bytes, h_A + sz1_bytes,
+				     sz2 * XSALSA20_BLOCKSZ, cudaMemcpyHostToDevice, strm2) );
+    blocksPerGrid = (N2 + threadsPerBlock - 1) / threadsPerBlock;
+    VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm2>>>(d_A + sz1_bytes, N2, sz2, v_nonce, blks_per_chunk, sz1);
+    checkCudaErrors( cudaMemcpyAsync(h_A, d_A, sz1_bytes, cudaMemcpyDeviceToHost, strm1) );
+    checkCudaErrors( cudaMemcpyAsync(h_A + sz1_bytes, d_A + sz1_bytes, sz2 * XSALSA20_BLOCKSZ, cudaMemcpyDeviceToHost, strm2) );
     checkCudaErrors( cudaDeviceSynchronize() );
 
     en = get_wtime_millis();
-    gpuTime1 = en - strt;
+    gpuTime1 = (en - strt);
 
-    printf("Invoking kernel\n");
-    strt = get_wtime_millis();
-
-    // Invoke kernel
-    int threadsPerBlock = THREADS_PER_BLOCK;
-    int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
-    VecCrypt<<<blocksPerGrid, threadsPerBlock>>>(d_A, N, NBLKS, v_nonce, blks_per_chunk);
-    getLastCudaError("kernel launch failure");
-    checkCudaErrors( cudaDeviceSynchronize() );
-
-    en = get_wtime_millis();
-    gpuTime2 = en - strt;
-
-    printf("Copying buffer back to host memory\n");
-    // Copy result from device memory to host memory
-
-    strt = get_wtime_millis();
-    checkCudaErrors( cudaMemcpy(h_A, d_A, size, cudaMemcpyDeviceToHost) );
-    checkCudaErrors( cudaDeviceSynchronize() );
-    en = get_wtime_millis();
-    gpuTime1 += (en - strt);
-    
     // Verify result
     printf("Computing reference code on CPU\n");
     strt = get_wtime_millis();
@@ -545,12 +543,11 @@ int main(int argc, char** argv)
     free(h_B);
 
     if (pinned)
-        printf("Data transfer time (pinned mem)         : %f msec\n", gpuTime1);
+        printf("Data transfer was pinned\n");
     else
-        printf("Data transfer time (non-pinned mem)     : %f msec\n", gpuTime1);
-    printf("GPU computation time                    : %f msec\n", gpuTime2);
-    printf("GPU throughput                          : %f MB/s\n", get_mb_s(size, gpuTime2));
-    printf("GPU throughput including naive transfer : %f MB/s\n", get_mb_s(size, gpuTime2 + gpuTime1));
+        printf("Data transfer was not pinned\n");
+    printf("GPU computation time                    : %f msec\n", gpuTime1);
+    printf("GPU throughput (including transfer)     : %f MB/s\n", get_mb_s(size, gpuTime1));
     printf("CPU computation time (reference code)   : %f msec\n", cpuTime1);
     printf("CPU throughput (reference code)         : %f MB/s\n", get_mb_s(size, cpuTime1));
     printf("CPU computation time (optimized code)   : %f msec\n", cpuTime2);
