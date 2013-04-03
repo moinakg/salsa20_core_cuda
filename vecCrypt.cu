@@ -24,14 +24,8 @@
 #include <unistd.h>
 #include <time.h>
 
-// includes, project
-#include <sdkHelper.h>  // helper for shared functions common to CUDA SDK samples
-#include <shrQATest.h>
-#include <shrUtils.h>
-
 // includes CUDA
 #include <cuda_runtime.h>
-#include <cutil_inline.h>
 
 #if defined(__CUDACC__) // NVCC
    #define MY_ALIGN(n) __align__(n)
@@ -48,7 +42,7 @@
 #define	UINT64_MAX (18446744073709551615ULL)
 #endif
 
-#define THREADS_PER_BLOCK (200)
+#define THREADS_PER_BLOCK (128)
 #define XSALSA20_CRYPTO_KEYBYTES 32
 #define XSALSA20_CRYPTO_NONCEBYTES 24
 #define XSALSA20_BLOCKSZ 64
@@ -208,110 +202,6 @@ crypto_core(
   return 0;
 }
 
-__device__ static int
-crypto_core_device(
-        uint32_t *out,
-  const uint32_t *in,
-  const unsigned char *k,
-  const unsigned char *c,
-  int stride
-)
-{
-  uint32_t x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15;
-  uint32_t j0, j1, j2, j3, j4, j5, j6, j7, j8, j9, j10, j11, j12, j13, j14, j15;
-  int i;
-
-  j0 = x0 = load_littleendian(c + 0);
-  j1 = x1 = load_littleendian(k + 0);
-  j2 = x2 = load_littleendian(k + 4);
-  j3 = x3 = load_littleendian(k + 8);
-  j4 = x4 = load_littleendian(k + 12);
-  j5 = x5 = load_littleendian(c + 4);
-
-  j6 = x6 = in[0 * stride];
-  j7 = x7 = in[1 * stride];
-  j8 = x8 = in[2 * stride];
-  j9 = x9 = in[3 * stride];
-
-  j10 = x10 = load_littleendian(c + 8);
-  j11 = x11 = load_littleendian(k + 16);
-  j12 = x12 = load_littleendian(k + 20);
-  j13 = x13 = load_littleendian(k + 24);
-  j14 = x14 = load_littleendian(k + 28);
-  j15 = x15 = load_littleendian(c + 12);
-
-  for (i = ROUNDS;i > 0;i -= 2) {
-     x4 ^= rotate( x0+x12, 7);
-     x8 ^= rotate( x4+ x0, 9);
-    x12 ^= rotate( x8+ x4,13);
-     x0 ^= rotate(x12+ x8,18);
-     x9 ^= rotate( x5+ x1, 7);
-    x13 ^= rotate( x9+ x5, 9);
-     x1 ^= rotate(x13+ x9,13);
-     x5 ^= rotate( x1+x13,18);
-    x14 ^= rotate(x10+ x6, 7);
-     x2 ^= rotate(x14+x10, 9);
-     x6 ^= rotate( x2+x14,13);
-    x10 ^= rotate( x6+ x2,18);
-     x3 ^= rotate(x15+x11, 7);
-     x7 ^= rotate( x3+x15, 9);
-    x11 ^= rotate( x7+ x3,13);
-    x15 ^= rotate(x11+ x7,18);
-     x1 ^= rotate( x0+ x3, 7);
-     x2 ^= rotate( x1+ x0, 9);
-     x3 ^= rotate( x2+ x1,13);
-     x0 ^= rotate( x3+ x2,18);
-     x6 ^= rotate( x5+ x4, 7);
-     x7 ^= rotate( x6+ x5, 9);
-     x4 ^= rotate( x7+ x6,13);
-     x5 ^= rotate( x4+ x7,18);
-    x11 ^= rotate(x10+ x9, 7);
-     x8 ^= rotate(x11+x10, 9);
-     x9 ^= rotate( x8+x11,13);
-    x10 ^= rotate( x9+ x8,18);
-    x12 ^= rotate(x15+x14, 7);
-    x13 ^= rotate(x12+x15, 9);
-    x14 ^= rotate(x13+x12,13);
-    x15 ^= rotate(x14+x13,18);
-  }
-
-  x0 += j0;
-  x1 += j1;
-  x2 += j2;
-  x3 += j3;
-  x4 += j4;
-  x5 += j5;
-  x6 += j6;
-  x7 += j7;
-  x8 += j8;
-  x9 += j9;
-  x10 += j10;
-  x11 += j11;
-  x12 += j12;
-  x13 += j13;
-  x14 += j14;
-  x15 += j15;
-
-  out[0 * stride] = x0;
-  out[1 * stride] = x1;
-  out[2 * stride] = x2;
-  out[3 * stride] = x3;
-  out[4 * stride] = x4;
-  out[5 * stride] = x5;
-  out[6 * stride] = x6;
-  out[7 * stride] = x7;
-  out[8 * stride] = x8;
-  out[9 * stride] = x9;
-  out[10 * stride] = x10;
-  out[11 * stride] = x11;
-  out[12 * stride] = x12;
-  out[13 * stride] = x13;
-  out[14 * stride] = x14;
-  out[15 * stride] = x15;
-
-  return 0;
-}
-
 // Variables
 unsigned char* h_A = NULL;
 unsigned char* h_B = NULL;
@@ -360,37 +250,122 @@ inline void __getLastCudaError(const char *errorMessage, const char *file, const
 // Device code
 __global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uint64_t p_nonce)
 {
-    uint64_t i = THREADS_PER_BLOCK * blockIdx.x + threadIdx.x, blockno;
-    __shared__ unsigned char MY_ALIGN(sizeof (uint32_t)) __in[CTR_INBLOCK_SZ  * THREADS_PER_BLOCK];
-    __shared__ unsigned char MY_ALIGN(sizeof (uint32_t)) __block[CTR_KS_SZ  * THREADS_PER_BLOCK];
-    uint32_t *block, *in;
-    uint32_t val1, *val2;
+    uint64_t i = THREADS_PER_BLOCK * blockIdx.x + threadIdx.x;
 
     if (i < N) {
         int k, tot;
-        int j;
-
-        in = (uint32_t *)&__in[threadIdx.x * sizeof (uint32_t)];
-        block = (uint32_t *)&__block[threadIdx.x * sizeof (uint32_t)];
-        in[0 * THREADS_PER_BLOCK] = p_nonce;
-        in[1 * THREADS_PER_BLOCK] = (p_nonce >> 32);
-        in[2 * THREADS_PER_BLOCK] = 0;
-        in[3 * THREADS_PER_BLOCK] = 0;
+        uint32_t *mem;
+        uint32_t x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15;
+        uint32_t j0, j1, j2, j3, j4, j5, j6, j7, j8, j9, j10, j11, j12, j13, j14, j15;
+        uint64_t blockno;
 
         blockno = i*BLOCKS_PER_CHUNK;
         tot = (nblocks - blockno > BLOCKS_PER_CHUNK) ? BLOCKS_PER_CHUNK:(nblocks - blockno);
 
         for (k = 0; k < tot; k++) {
-            in[2 * THREADS_PER_BLOCK] = blockno;
-            in[3 * THREADS_PER_BLOCK] = (blockno >> 32);
+            j0 = x0 = load_littleendian(sigma + 0);
+            j1 = x1 = load_littleendian(key + 0);
+            j2 = x2 = load_littleendian(key + 4);
+            j3 = x3 = load_littleendian(key + 8);
+            j4 = x4 = load_littleendian(key + 12);
+            j5 = x5 = load_littleendian(sigma + 4);
 
-            crypto_core_device(block,in,key,sigma, THREADS_PER_BLOCK);
+            j6 = x6 = p_nonce;
+            j7 = x7 = p_nonce >> 32;
+            j8 = x8 = blockno;
+            j9 = x9 = blockno >> 32;
 
-            for (j = 0;j < XSALSA20_BLOCKSZ; j+= sizeof (uint32_t)) {
-                val1 = block[j/(sizeof (uint32_t)) * THREADS_PER_BLOCK];
-                val2 = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + j];
-                *val2 ^= val1;
+            j10 = x10 = load_littleendian(sigma + 8);
+            j11 = x11 = load_littleendian(key + 16);
+            j12 = x12 = load_littleendian(key + 20);
+            j13 = x13 = load_littleendian(key + 24);
+            j14 = x14 = load_littleendian(key + 28);
+            j15 = x15 = load_littleendian(sigma + 12);
+
+            for (i = ROUNDS;i > 0;i -= 2) {
+                x4 ^= rotate( x0+x12, 7);
+                x8 ^= rotate( x4+ x0, 9);
+                x12 ^= rotate( x8+ x4,13);
+                x0 ^= rotate(x12+ x8,18);
+                x9 ^= rotate( x5+ x1, 7);
+                x13 ^= rotate( x9+ x5, 9);
+                x1 ^= rotate(x13+ x9,13);
+                x5 ^= rotate( x1+x13,18);
+                x14 ^= rotate(x10+ x6, 7);
+                x2 ^= rotate(x14+x10, 9);
+                x6 ^= rotate( x2+x14,13);
+                x10 ^= rotate( x6+ x2,18);
+                x3 ^= rotate(x15+x11, 7);
+                x7 ^= rotate( x3+x15, 9);
+                x11 ^= rotate( x7+ x3,13);
+                x15 ^= rotate(x11+ x7,18);
+                x1 ^= rotate( x0+ x3, 7);
+                x2 ^= rotate( x1+ x0, 9);
+                x3 ^= rotate( x2+ x1,13);
+                x0 ^= rotate( x3+ x2,18);
+                x6 ^= rotate( x5+ x4, 7);
+                x7 ^= rotate( x6+ x5, 9);
+                x4 ^= rotate( x7+ x6,13);
+                x5 ^= rotate( x4+ x7,18);
+                x11 ^= rotate(x10+ x9, 7);
+                x8 ^= rotate(x11+x10, 9);
+                x9 ^= rotate( x8+x11,13);
+                x10 ^= rotate( x9+ x8,18);
+                x12 ^= rotate(x15+x14, 7);
+                x13 ^= rotate(x12+x15, 9);
+                x14 ^= rotate(x13+x12,13);
+                x15 ^= rotate(x14+x13,18);
             }
+
+            x0 += j0;
+            x1 += j1;
+            x2 += j2;
+            x3 += j3;
+            x4 += j4;
+            x5 += j5;
+            x6 += j6;
+            x7 += j7;
+            x8 += j8;
+            x9 += j9;
+            x10 += j10;
+            x11 += j11;
+            x12 += j12;
+            x13 += j13;
+            x14 += j14;
+            x15 += j15;
+
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 0 * 4];
+            *mem ^= x0;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 1 * 4];
+            *mem ^= x1;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 2 * 4];
+            *mem ^= x2;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 3 * 4];
+            *mem ^= x3;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 4 * 4];
+            *mem ^= x4;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 5 * 4];
+            *mem ^= x5;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 6 * 4];
+            *mem ^= x6;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 7 * 4];
+            *mem ^= x7;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 8 * 4];
+            *mem ^= x8;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 9 * 4];
+            *mem ^= x9;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 10 * 4];
+            *mem ^= x10;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 11 * 4];
+            *mem ^= x11;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 12 * 4];
+            *mem ^= x12;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 13 * 4];
+            *mem ^= x13;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 14 * 4];
+            *mem ^= x14;
+            mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ + 15 * 4];
+            *mem ^= x15;
             blockno++;
         }
     }
@@ -465,15 +440,12 @@ get_mb_s(uint64_t bytes, double diff)
 // Host code
 int main(int argc, char** argv)
 {
-    shrQAStart(argc, argv);
-
     printf("Vector Encryption\n");
     unsigned int NBLKS = 4000000, N;
     int rv;
     size_t size, i;
     unsigned char k[32];
     double gpuTime1, gpuTime2, cpuTime1, cpuTime2, strt, en;
-    unsigned int hTimer;
     uint64_t v_nonce;
 
     ParseArguments(argc, argv);
@@ -499,7 +471,6 @@ int main(int argc, char** argv)
     printf("Initializing input data\n");
     Init(h_A, size);
     memcpy(h_B, h_A, size);
-    cutilCheckError( cutCreateTimer(&hTimer) );
 
     // Allocate vectors in device memory
     printf("Allocating device buffer\n");
@@ -507,21 +478,19 @@ int main(int argc, char** argv)
 
     // Copy vectors from host memory to device memory
     printf("Copying buffer to device\n");
-    cutilCheckError( cutResetTimer(hTimer) );
-    cutilCheckError( cutStartTimer(hTimer) );
 
+    strt = get_wtime_millis();
     checkCudaErrors( cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice) );
     checkCudaErrors( cudaMemcpyToSymbol(key, k, XSALSA20_CRYPTO_KEYBYTES, 0, cudaMemcpyHostToDevice) );
     checkCudaErrors( cudaMemcpyToSymbol(sigma, hsigma, 16, 0, cudaMemcpyHostToDevice) );
     v_nonce = load_littleendian64(h_nonce);
     checkCudaErrors( cudaDeviceSynchronize() );
 
-    cutilCheckError( cutStopTimer(hTimer) );
-    gpuTime1 = cutGetTimerValue(hTimer);
+    en = get_wtime_millis();
+    gpuTime1 = en - strt;
 
     printf("Invoking kernel\n");
-    cutilCheckError( cutResetTimer(hTimer) );
-    cutilCheckError( cutStartTimer(hTimer) );
+    strt = get_wtime_millis();
 
     // Invoke kernel
     int threadsPerBlock = THREADS_PER_BLOCK;
@@ -530,28 +499,27 @@ int main(int argc, char** argv)
     getLastCudaError("kernel launch failure");
     checkCudaErrors( cudaDeviceSynchronize() );
 
-    cutilCheckError( cutStopTimer(hTimer) );
-    gpuTime2 = cutGetTimerValue(hTimer);
+    en = get_wtime_millis();
+    gpuTime2 = en - strt;
 
     printf("Copying buffer back to host memory\n");
     // Copy result from device memory to host memory
-    // h_C contains the result in host memory
-    cutilCheckError( cutResetTimer(hTimer) );
-    cutilCheckError( cutStartTimer(hTimer) );
 
+    strt = get_wtime_millis();
     checkCudaErrors( cudaMemcpy(h_A, d_A, size, cudaMemcpyDeviceToHost) );
     checkCudaErrors( cudaDeviceSynchronize() );
-
-    cutilCheckError( cutStopTimer(hTimer) );
-    gpuTime1 += cutGetTimerValue(hTimer);
+    en = get_wtime_millis();
+    gpuTime1 += (en - strt);
     
-    printf("Verifying result\n");
     // Verify result
+    printf("Computing reference code on CPU\n");
     strt = get_wtime_millis();
     crypto_stream_salsa20_ref_xor(h_B, size, h_nonce + 16, k);
     en = get_wtime_millis();
     cpuTime1 = en - strt;
     rv = 0;
+
+    printf("Verifying result\n");
     for (i = 0; i < size; i++) {
 	    if (h_B[i] != h_A[i]) {
 		    printf("Byte #%llu differ, %d, %d\n", i, h_B[i], h_A[i]);
@@ -560,6 +528,7 @@ int main(int argc, char** argv)
 	    }
     }
 
+    printf("Computing optimized code on CPU\n");
     strt = get_wtime_millis();
     crypto_stream_salsa20_amd64_xmm6_xor(h_B, h_B, size, h_nonce + 16, k);
     en = get_wtime_millis();
@@ -579,7 +548,10 @@ int main(int argc, char** argv)
     printf("CPU throughput (reference code)         : %f MB/s\n", get_mb_s(size, cpuTime1));
     printf("CPU computation time (optimized code)   : %f msec\n", cpuTime2);
     printf("CPU throughput (optimized code)         : %f MB/s\n", get_mb_s(size, cpuTime2));
-    shrQAFinishExit(argc, (const char **)argv, (rv==0) ? QA_PASSED : QA_FAILED);
+    if (rv == 0)
+        printf("PASSED\n");
+    else
+        printf("FAILED\n");
 }
 
 void CleanupResources(void)

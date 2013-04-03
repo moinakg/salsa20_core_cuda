@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright 1993-2006 NVIDIA Corporation.  All rights reserved.
+# Copyright 1993-2012 NVIDIA Corporation.  All rights reserved.
 #
 # NOTICE TO USER:   
 #
@@ -29,24 +29,109 @@
 #
 ################################################################################
 #
-# Build script for project
+# Makefile project only supported on Mac OS X and Linux Platforms)
 #
 ################################################################################
 
-# Add source files here
-EXECUTABLE	:= vecCrypt
-# Cuda source files (compiled with cudacc)
-CUFILES		:= vecCrypt.cu
-# C/C++ source files (compiled with gcc / c++)
-CCFILES		:= stream.s
+# OS Name (Linux or Darwin)
+OSUPPER = $(shell uname -s 2>/dev/null | tr [:lower:] [:upper:])
+OSLOWER = $(shell uname -s 2>/dev/null | tr [:upper:] [:lower:])
 
-CXXFLAGS = -msse4.2
+# Flags to detect 32-bit or 64-bit OS platform
+OS_SIZE = $(shell uname -m | sed -e "s/i.86/32/" -e "s/x86_64/64/")
+OS_ARCH = $(shell uname -m | sed -e "s/i386/i686/")
 
-################################################################################
-# Rules and targets
+# These flags will override any settings
+ifeq ($(i386),1)
+	OS_SIZE = 32
+	OS_ARCH = i686
+endif
 
-include ../../common/common.mk
+ifeq ($(x86_64),1)
+	OS_SIZE = 64
+	OS_ARCH = x86_64
+endif
 
+# Flags to detect either a Linux system (linux) or Mac OSX (darwin)
+DARWIN = $(strip $(findstring DARWIN, $(OSUPPER)))
 
-LIB += -lrt
+# Location of the CUDA Toolkit binaries and libraries
+CUDA_PATH       ?= /usr/local/cuda-5.0
+CUDA_INC_PATH   ?= $(CUDA_PATH)/include
+CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
+ifneq ($(DARWIN),)
+  CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib
+else
+  ifeq ($(OS_SIZE),32)
+    CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib
+  else
+    CUDA_LIB_PATH  ?= $(CUDA_PATH)/lib64
+  endif
+endif
 
+# Common binaries
+NVCC            ?= $(CUDA_BIN_PATH)/nvcc
+GCC             ?= g++
+
+# Extra user flags
+EXTRA_NVCCFLAGS ?=
+EXTRA_LDFLAGS   ?= 
+
+# CUDA code generation flags
+GENCODE_SM10    := -gencode arch=compute_10,code=sm_10
+GENCODE_SM20    := -gencode arch=compute_20,code=sm_20
+GENCODE_SM30    := -gencode arch=compute_30,code=sm_30 -gencode arch=compute_35,code=sm_35
+GENCODE_FLAGS   := $(GENCODE_SM10) $(GENCODE_SM20) $(GENCODE_SM30)
+
+# OS-specific build flags
+ifneq ($(DARWIN),) 
+      LDFLAGS   := -Xlinker -rpath $(CUDA_LIB_PATH) -L$(CUDA_LIB_PATH) -lcudart
+      CCFLAGS   := -arch $(OS_ARCH) 
+else
+  ifeq ($(OS_SIZE),32)
+      LDFLAGS   := -L$(CUDA_LIB_PATH) -lcudart -lrt
+      CCFLAGS   := -m32 -O3 -msse4.2
+  else
+      LDFLAGS   := -L$(CUDA_LIB_PATH) -lcudart -lrt
+      CCFLAGS   := -m64 -O3 -msse4.2
+  endif
+endif
+
+# OS-architecture specific flags
+ifeq ($(OS_SIZE),32)
+      NVCCFLAGS := -m32
+else
+      NVCCFLAGS := -m64
+endif
+
+# Debug build flags
+ifeq ($(dbg),1)
+      CCFLAGS   += -g
+      NVCCFLAGS += -g -G -Xptxas="-v"
+      TARGET := debug
+else
+      TARGET := release
+      NVCCFLAGS += -O2  -Xptxas="-v"
+endif
+
+# Target rules
+all: build
+
+build: vecCrypt
+
+vecCrypt.o: vecCrypt.cu
+	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
+
+stream.o: stream.s
+	gcc -c stream.s
+
+vecCrypt: vecCrypt.o stream.o
+	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS)
+	mkdir -p ../../bin/$(OSLOWER)/$(TARGET)
+	cp $@ ../../bin/$(OSLOWER)/$(TARGET)
+
+run: build
+	./vecCrypt
+
+clean:
+	rm -f vecCrypt vecCrypt.o 
