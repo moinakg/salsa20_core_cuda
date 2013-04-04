@@ -50,6 +50,7 @@
 #define CTR_KS_SZ (XSALSA20_BLOCKSZ)
 #define BLOCKS_PER_CHUNK_1X 4
 #define BLOCKS_PER_CHUNK_2X 1
+#define NUM_ITERS 8
 
 extern "C" int crypto_stream_salsa20_amd64_xmm6_xor(unsigned char *c, unsigned char *m,
 		unsigned long long mlen, unsigned char *n, unsigned char *k);
@@ -285,33 +286,33 @@ __global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uin
             j15 = x15 = load_littleendian(sigma + 12);
 
             for (i = ROUNDS;i > 0;i -= 2) {
-                x4 ^= rotate( x0+x12, 7);
-                x8 ^= rotate( x4+ x0, 9);
+                x4  ^= rotate( x0+x12, 7);
+                x8  ^= rotate( x4+ x0, 9);
                 x12 ^= rotate( x8+ x4,13);
-                x0 ^= rotate(x12+ x8,18);
-                x9 ^= rotate( x5+ x1, 7);
+                x0  ^= rotate(x12+ x8,18);
+                x9  ^= rotate( x5+ x1, 7);
                 x13 ^= rotate( x9+ x5, 9);
-                x1 ^= rotate(x13+ x9,13);
-                x5 ^= rotate( x1+x13,18);
+                x1  ^= rotate(x13+ x9,13);
+                x5  ^= rotate( x1+x13,18);
                 x14 ^= rotate(x10+ x6, 7);
-                x2 ^= rotate(x14+x10, 9);
-                x6 ^= rotate( x2+x14,13);
+                x2  ^= rotate(x14+x10, 9);
+                x6  ^= rotate( x2+x14,13);
                 x10 ^= rotate( x6+ x2,18);
-                x3 ^= rotate(x15+x11, 7);
-                x7 ^= rotate( x3+x15, 9);
+                x3  ^= rotate(x15+x11, 7);
+                x7  ^= rotate( x3+x15, 9);
                 x11 ^= rotate( x7+ x3,13);
                 x15 ^= rotate(x11+ x7,18);
-                x1 ^= rotate( x0+ x3, 7);
-                x2 ^= rotate( x1+ x0, 9);
-                x3 ^= rotate( x2+ x1,13);
-                x0 ^= rotate( x3+ x2,18);
-                x6 ^= rotate( x5+ x4, 7);
-                x7 ^= rotate( x6+ x5, 9);
-                x4 ^= rotate( x7+ x6,13);
-                x5 ^= rotate( x4+ x7,18);
+                x1  ^= rotate( x0+ x3, 7);
+                x2  ^= rotate( x1+ x0, 9);
+                x3  ^= rotate( x2+ x1,13);
+                x0  ^= rotate( x3+ x2,18);
+                x6  ^= rotate( x5+ x4, 7);
+                x7  ^= rotate( x6+ x5, 9);
+                x4  ^= rotate( x7+ x6,13);
+                x5  ^= rotate( x4+ x7,18);
                 x11 ^= rotate(x10+ x9, 7);
-                x8 ^= rotate(x11+x10, 9);
-                x9 ^= rotate( x8+x11,13);
+                x8  ^= rotate(x11+x10, 9);
+                x9  ^= rotate( x8+x11,13);
                 x10 ^= rotate( x9+ x8,18);
                 x12 ^= rotate(x15+x14, 7);
                 x13 ^= rotate(x12+x15, 9);
@@ -428,14 +429,14 @@ get_mb_s(uint64_t bytes, double diff)
 int main(int argc, char** argv)
 {
     printf("Salsa20 Vector Encryption\n");
-    unsigned int NBLKS = 4000000, N, N1, N2;
+    unsigned int NBLKS = 4000000, N;
     int rv, blks_per_chunk, threadsPerBlock, blocksPerGrid;
-    size_t size, i, sz1, sz2, sz1_bytes;
-    unsigned char k[32];
+    size_t size, i, sz1, sz1_bytes, blk_off;
+    unsigned char k[32], *h_A1, *d_A1;
     double gpuTime1, cpuTime1, cpuTime2, strt, en;
     uint64_t v_nonce;
     cudaDeviceProp deviceProp;
-    cudaStream_t strm1, strm2;
+    cudaStream_t strm[NUM_ITERS];
 
     ParseArguments(argc, argv);
     cudaGetDeviceProperties(&deviceProp, 0);
@@ -448,12 +449,8 @@ int main(int argc, char** argv)
     if (NBLKS % blks_per_chunk) N++;
     size = NBLKS * XSALSA20_BLOCKSZ;
 
-    checkCudaErrors( cudaStreamCreate(&strm1) );
-    checkCudaErrors( cudaStreamCreate(&strm2) );
-    sz1 = NBLKS/2;
-    sz2 = NBLKS - sz1;
-    N1 = N/2;
-    N2 = N - N1;
+    for (i = 0; i < NUM_ITERS; i++)
+        checkCudaErrors( cudaStreamCreate(&strm[i]) );
 
     // Allocate input vectors h_A and h_B in host memory
     pinned = 1;
@@ -485,17 +482,43 @@ int main(int argc, char** argv)
     checkCudaErrors( cudaMemcpyToSymbol(sigma, hsigma, 16, 0, cudaMemcpyHostToDevice) );
     v_nonce = load_littleendian64(h_nonce);
     threadsPerBlock = THREADS_PER_BLOCK;
-    sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
 
-    checkCudaErrors( cudaMemcpyAsync(d_A, h_A, sz1_bytes, cudaMemcpyHostToDevice, strm1) );
-    blocksPerGrid = (N1 + threadsPerBlock - 1) / threadsPerBlock;
-    VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm1>>>(d_A, N1, sz1, v_nonce, blks_per_chunk, 0);
-    checkCudaErrors( cudaMemcpyAsync(d_A + sz1_bytes, h_A + sz1_bytes,
-				     sz2 * XSALSA20_BLOCKSZ, cudaMemcpyHostToDevice, strm2) );
-    blocksPerGrid = (N2 + threadsPerBlock - 1) / threadsPerBlock;
-    VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm2>>>(d_A + sz1_bytes, N2, sz2, v_nonce, blks_per_chunk, sz1);
-    checkCudaErrors( cudaMemcpyAsync(h_A, d_A, sz1_bytes, cudaMemcpyDeviceToHost, strm1) );
-    checkCudaErrors( cudaMemcpyAsync(h_A + sz1_bytes, d_A + sz1_bytes, sz2 * XSALSA20_BLOCKSZ, cudaMemcpyDeviceToHost, strm2) );
+    h_A1 = h_A;
+    d_A1 = d_A;
+    blk_off = 0;
+    for (i = 0; i < NUM_ITERS; i++) {
+        if (i == NUM_ITERS - 1) {
+            sz1 = NBLKS/NUM_ITERS * NUM_ITERS;
+            sz1 = NBLKS/NUM_ITERS + (NBLKS - sz1);
+        } else {
+            sz1 = NBLKS/NUM_ITERS;
+        }
+        sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
+        N = sz1 / blks_per_chunk;
+        if (sz1 % blks_per_chunk) N++;
+
+        checkCudaErrors( cudaMemcpyAsync(d_A1, h_A1, sz1_bytes, cudaMemcpyHostToDevice, strm[i%NUM_ITERS]) );
+        blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
+        VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm[i%NUM_ITERS]>>>(d_A1, N, sz1, v_nonce, blks_per_chunk, blk_off);
+        h_A1 += sz1_bytes;
+        d_A1 += sz1_bytes;
+        blk_off += sz1;
+    }
+
+    h_A1 = h_A;
+    d_A1 = d_A;
+    for (i = 0; i < NUM_ITERS; i++) {
+        if (i == NUM_ITERS - 1) {
+            sz1 = NBLKS/NUM_ITERS * NUM_ITERS;
+            sz1 = NBLKS/NUM_ITERS + (NBLKS - sz1);
+        } else {
+            sz1 = NBLKS/NUM_ITERS;
+        }
+        sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
+        checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_ITERS]) );
+        h_A1 += sz1_bytes;
+        d_A1 += sz1_bytes;
+    }
     checkCudaErrors( cudaDeviceSynchronize() );
 
     en = get_wtime_millis();
