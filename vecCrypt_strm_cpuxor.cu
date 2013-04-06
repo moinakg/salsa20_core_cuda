@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
+#include <pthread.h>
 
 // includes CUDA
 #include <cuda_runtime.h>
@@ -52,6 +54,7 @@
 #define BLOCKS_PER_CHUNK_2X 1
 #define NUM_ITERS 16
 
+extern "C" void xor_buffer_aligned(unsigned char *buf1, unsigned char *buf2, size_t nblks, int blksz);
 extern "C" int crypto_stream_salsa20_amd64_xmm6_xor(unsigned char *c, unsigned char *m,
 		unsigned long long mlen, unsigned char *n, unsigned char *k);
 
@@ -338,22 +341,22 @@ __global__ void VecCrypt(unsigned char* A, unsigned int N, uint64_t nblocks, uin
             x15 += j15;
 
             mem = (unsigned int *)&A[blockno*XSALSA20_BLOCKSZ];
-            *mem ^= x0;  mem++;
-            *mem ^= x1;  mem++;
-            *mem ^= x2;  mem++;
-            *mem ^= x3;  mem++;
-            *mem ^= x4;  mem++;
-            *mem ^= x5;  mem++;
-            *mem ^= x6;  mem++;
-            *mem ^= x7;  mem++;
-            *mem ^= x8;  mem++;
-            *mem ^= x9;  mem++;
-            *mem ^= x10;  mem++;
-            *mem ^= x11;  mem++;
-            *mem ^= x12;  mem++;
-            *mem ^= x13;  mem++;
-            *mem ^= x14;  mem++;
-            *mem ^= x15;
+            *mem = x0;  mem++;
+            *mem = x1;  mem++;
+            *mem = x2;  mem++;
+            *mem = x3;  mem++;
+            *mem = x4;  mem++;
+            *mem = x5;  mem++;
+            *mem = x6;  mem++;
+            *mem = x7;  mem++;
+            *mem = x8;  mem++;
+            *mem = x9;  mem++;
+            *mem = x10;  mem++;
+            *mem = x11;  mem++;
+            *mem = x12;  mem++;
+            *mem = x13;  mem++;
+            *mem = x14;  mem++;
+            *mem = x15;
             blockno++;
         }
     }
@@ -424,19 +427,38 @@ get_mb_s(uint64_t bytes, double diff)
 	return (BYTES_TO_MB(bytes_sec));
 }
 
+struct tdat {
+    unsigned char *h_A1;
+    unsigned char *h_B1;
+    uint64_t nblks;
+    cudaStream_t strm;
+    pthread_t tid;
+};
+
+void *
+proc_buf(void *dat)
+{
+    struct tdat *data = (struct tdat *)dat;
+
+    checkCudaErrors( cudaStreamSynchronize(data->strm) );
+    xor_buffer_aligned(data->h_A1, data->h_B1, data->nblks, XSALSA20_BLOCKSZ);
+
+    return (NULL);
+}
 
 // Host code
 int main(int argc, char** argv)
 {
-    printf("Salsa20 Vector Encryption using CUDA streams\n");
+    printf("Salsa20 Vector Encryption using CUDA streams and XOR on CPU with OpenMP\n");
     unsigned int NBLKS = 4000000, N;
     int rv, blks_per_chunk, threadsPerBlock, blocksPerGrid;
     size_t size, i, sz1, sz1_bytes, blk_off;
-    unsigned char k[32], *h_A1, *d_A1;
+    unsigned char k[32], *h_A1, *d_A1, *h_B1;
     double gpuTime1, cpuTime1, cpuTime2, strt, en;
     uint64_t v_nonce;
     cudaDeviceProp deviceProp;
     cudaStream_t strm[NUM_ITERS];
+    struct tdat t_data[NUM_ITERS];
 
     ParseArguments(argc, argv);
     cudaGetDeviceProperties(&deviceProp, 0);
@@ -459,16 +481,20 @@ int main(int argc, char** argv)
         h_A = (unsigned char *)malloc(size);
     }
     if (h_A == 0) CleanupResources();
-    h_B = (unsigned char *)malloc(size);
-    if (h_B == 0) CleanupResources();
+    if ((rv = posix_memalign((void **)&h_B, 16, size)) != 0) {
+        if (rv == EINVAL)
+            printf("Invalid argument to posix_memalign()\n");
+        if (rv == ENOMEM)
+            printf("Out of memory\n");
+        CleanupResources();
+    }
 
     memset(k, 1, XSALSA20_CRYPTO_KEYBYTES);
     memset(h_nonce, 0, XSALSA20_CRYPTO_NONCEBYTES);
 
     // Initialize input vectors
     printf("Initializing input data\n");
-    Init(h_A, size);
-    memcpy(h_B, h_A, size);
+    Init(h_B, size);
 
     // Allocate vectors in device memory
     printf("Allocating device buffer\n");
@@ -485,6 +511,7 @@ int main(int argc, char** argv)
 
     h_A1 = h_A;
     d_A1 = d_A;
+    h_B1 = h_B;
     blk_off = 0;
     for (i = 0; i < NUM_ITERS; i++) {
         if (i == NUM_ITERS - 1) {
@@ -497,29 +524,24 @@ int main(int argc, char** argv)
         N = sz1 / blks_per_chunk;
         if (sz1 % blks_per_chunk) N++;
 
-        checkCudaErrors( cudaMemcpyAsync(d_A1, h_A1, sz1_bytes, cudaMemcpyHostToDevice, strm[i%NUM_ITERS]) );
         blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
         VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm[i%NUM_ITERS]>>>(d_A1, N, sz1, v_nonce, blks_per_chunk, blk_off);
+        checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_ITERS]) );
+        t_data[i].h_A1 = h_A1;
+        t_data[i].h_B1 = h_B1;
+        t_data[i].nblks = sz1;
+        t_data[i].strm = strm[i%NUM_ITERS];
+        pthread_create(&(t_data[i].tid), NULL, proc_buf, (void *)&(t_data[i]));
+
         h_A1 += sz1_bytes;
         d_A1 += sz1_bytes;
+        h_B1 += sz1_bytes;
         blk_off += sz1;
     }
 
-    h_A1 = h_A;
-    d_A1 = d_A;
-    for (i = 0; i < NUM_ITERS; i++) {
-        if (i == NUM_ITERS - 1) {
-            sz1 = NBLKS/NUM_ITERS * NUM_ITERS;
-            sz1 = NBLKS/NUM_ITERS + (NBLKS - sz1);
-        } else {
-            sz1 = NBLKS/NUM_ITERS;
-        }
-        sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
-        checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_ITERS]) );
-        h_A1 += sz1_bytes;
-        d_A1 += sz1_bytes;
-    }
     checkCudaErrors( cudaDeviceSynchronize() );
+    for (i = 0; i < NUM_ITERS; i++)
+        pthread_join(t_data[i].tid, NULL);
 
     en = get_wtime_millis();
     gpuTime1 = (en - strt);

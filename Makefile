@@ -117,7 +117,7 @@ endif
 # Target rules
 all: build
 
-build: vecCrypt vecCrypt_strm
+build: vecCrypt vecCrypt_strm vecCrypt_strm_cpuxor
 
 vecCrypt.o: vecCrypt.cu
 	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
@@ -125,14 +125,23 @@ vecCrypt.o: vecCrypt.cu
 vecCrypt_strm.o: vecCrypt_strm.cu
 	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
 
+vecCrypt_strm_cpuxor.o: vecCrypt_strm_cpuxor.cu
+	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
+
 stream.o: stream.s
 	gcc -c stream.s
+
+utils.o: utils.c
+	gcc -fopenmp -O3 -msse4.2 -c utils.c
 
 vecCrypt: vecCrypt.o stream.o
 	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS)
 
 vecCrypt_strm: vecCrypt_strm.o stream.o
-	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS)
+	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS) -lgomp
+
+vecCrypt_strm_cpuxor: vecCrypt_strm_cpuxor.o stream.o utils.o
+	$(GCC) $(CCFLAGS) -o $@ $+ $(LDFLAGS) $(EXTRA_LDFLAGS) -lgomp
 
 run: build
 	./vecCrypt
@@ -140,5 +149,6 @@ run: build
 clean:
 	rm -f vecCrypt vecCrypt.o 
 	rm -f vecCrypt_strm vecCrypt_strm.o 
-	rm -f stream.o
+	rm -f vecCrypt_strm_cpuxor vecCrypt_strm_cpuxor.o 
+	rm -f stream.o utils.o
 
