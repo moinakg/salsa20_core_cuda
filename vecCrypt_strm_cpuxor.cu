@@ -455,7 +455,8 @@ int main(int argc, char** argv)
     pinned = 1;
     if (cudaMallocHost(&h_A, size) != cudaSuccess) {
         pinned = 0;
-        h_A = (unsigned char *)malloc(size);
+        if (posix_memalign((void **)&h_A, 16, size) != 0)
+            h_A = NULL;
     }
     if (h_A == 0) CleanupResources();
     if ((rv = posix_memalign((void **)&h_B, 16, size)) != 0) {
@@ -553,8 +554,8 @@ int main(int argc, char** argv)
         printf("Data transfer was pinned\n");
     else
         printf("Data transfer was not pinned\n");
-    printf("GPU computation time                    : %f msec\n", gpuTime1);
-    printf("GPU throughput (including transfer)     : %f MB/s\n", get_mb_s(size, gpuTime1));
+    printf("GPU+CPU computation time (with transfer): %f msec\n", gpuTime1);
+    printf("GPU+CPU throughput (with transfer)      : %f MB/s\n", get_mb_s(size, gpuTime1));
     printf("CPU computation time (reference code)   : %f msec\n", cpuTime1);
     printf("CPU throughput (reference code)         : %f MB/s\n", get_mb_s(size, cpuTime1));
     printf("CPU computation time (optimized code)   : %f msec\n", cpuTime2);

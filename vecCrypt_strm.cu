@@ -531,8 +531,8 @@ int main(int argc, char** argv)
         printf("Data transfer was pinned\n");
     else
         printf("Data transfer was not pinned\n");
-    printf("GPU computation time                    : %f msec\n", gpuTime1);
-    printf("GPU throughput (including transfer)     : %f MB/s\n", get_mb_s(size, gpuTime1));
+    printf("GPU computation time (with transfer)    : %f msec\n", gpuTime1);
+    printf("GPU throughput (with transfer)          : %f MB/s\n", get_mb_s(size, gpuTime1));
     printf("CPU computation time (reference code)   : %f msec\n", cpuTime1);
     printf("CPU throughput (reference code)         : %f MB/s\n", get_mb_s(size, cpuTime1));
     printf("CPU computation time (optimized code)   : %f msec\n", cpuTime2);
