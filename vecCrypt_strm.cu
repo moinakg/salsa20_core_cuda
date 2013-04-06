@@ -27,30 +27,7 @@
 // includes CUDA
 #include <cuda_runtime.h>
 
-#if defined(__CUDACC__) // NVCC
-   #define MY_ALIGN(n) __align__(n)
-#elif defined(__GNUC__) // GCC
-  #define MY_ALIGN(n) __attribute__((aligned(n)))
-#elif defined(_MSC_VER) // MSVC
-  #define MY_ALIGN(n) __declspec(align(n))
-#else
-  #error "Please provide a definition for MY_ALIGN macro for your host compiler!"
-#endif
-
-#define ROUNDS 20
-#ifndef UINT64_MAX
-#define	UINT64_MAX (18446744073709551615ULL)
-#endif
-
-#define THREADS_PER_BLOCK (128)
-#define XSALSA20_CRYPTO_KEYBYTES 32
-#define XSALSA20_CRYPTO_NONCEBYTES 24
-#define XSALSA20_BLOCKSZ 64
-#define CTR_INBLOCK_SZ (16)
-#define CTR_KS_SZ (XSALSA20_BLOCKSZ)
-#define BLOCKS_PER_CHUNK_1X 4
-#define BLOCKS_PER_CHUNK_2X 1
-#define NUM_ITERS 16
+#include "common.h"
 
 extern "C" int crypto_stream_salsa20_amd64_xmm6_xor(unsigned char *c, unsigned char *m,
 		unsigned long long mlen, unsigned char *n, unsigned char *k);
@@ -436,7 +413,7 @@ int main(int argc, char** argv)
     double gpuTime1, cpuTime1, cpuTime2, strt, en;
     uint64_t v_nonce;
     cudaDeviceProp deviceProp;
-    cudaStream_t strm[NUM_ITERS];
+    cudaStream_t strm[NUM_STREAMS];
 
     ParseArguments(argc, argv);
     cudaGetDeviceProperties(&deviceProp, 0);
@@ -449,7 +426,7 @@ int main(int argc, char** argv)
     if (NBLKS % blks_per_chunk) N++;
     size = NBLKS * XSALSA20_BLOCKSZ;
 
-    for (i = 0; i < NUM_ITERS; i++)
+    for (i = 0; i < NUM_STREAMS; i++)
         checkCudaErrors( cudaStreamCreate(&strm[i]) );
 
     // Allocate input vectors h_A and h_B in host memory
@@ -486,20 +463,20 @@ int main(int argc, char** argv)
     h_A1 = h_A;
     d_A1 = d_A;
     blk_off = 0;
-    for (i = 0; i < NUM_ITERS; i++) {
-        if (i == NUM_ITERS - 1) {
-            sz1 = NBLKS/NUM_ITERS * NUM_ITERS;
-            sz1 = NBLKS/NUM_ITERS + (NBLKS - sz1);
+    for (i = 0; i < NUM_STREAMS; i++) {
+        if (i == NUM_STREAMS - 1) {
+            sz1 = NBLKS/NUM_STREAMS * NUM_STREAMS;
+            sz1 = NBLKS/NUM_STREAMS + (NBLKS - sz1);
         } else {
-            sz1 = NBLKS/NUM_ITERS;
+            sz1 = NBLKS/NUM_STREAMS;
         }
         sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
         N = sz1 / blks_per_chunk;
         if (sz1 % blks_per_chunk) N++;
 
-        checkCudaErrors( cudaMemcpyAsync(d_A1, h_A1, sz1_bytes, cudaMemcpyHostToDevice, strm[i%NUM_ITERS]) );
+        checkCudaErrors( cudaMemcpyAsync(d_A1, h_A1, sz1_bytes, cudaMemcpyHostToDevice, strm[i%NUM_STREAMS]) );
         blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
-        VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm[i%NUM_ITERS]>>>(d_A1, N, sz1, v_nonce, blks_per_chunk, blk_off);
+        VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm[i%NUM_STREAMS]>>>(d_A1, N, sz1, v_nonce, blks_per_chunk, blk_off);
         h_A1 += sz1_bytes;
         d_A1 += sz1_bytes;
         blk_off += sz1;
@@ -507,15 +484,15 @@ int main(int argc, char** argv)
 
     h_A1 = h_A;
     d_A1 = d_A;
-    for (i = 0; i < NUM_ITERS; i++) {
-        if (i == NUM_ITERS - 1) {
-            sz1 = NBLKS/NUM_ITERS * NUM_ITERS;
-            sz1 = NBLKS/NUM_ITERS + (NBLKS - sz1);
+    for (i = 0; i < NUM_STREAMS; i++) {
+        if (i == NUM_STREAMS - 1) {
+            sz1 = NBLKS/NUM_STREAMS * NUM_STREAMS;
+            sz1 = NBLKS/NUM_STREAMS + (NBLKS - sz1);
         } else {
-            sz1 = NBLKS/NUM_ITERS;
+            sz1 = NBLKS/NUM_STREAMS;
         }
         sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
-        checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_ITERS]) );
+        checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_STREAMS]) );
         h_A1 += sz1_bytes;
         d_A1 += sz1_bytes;
     }

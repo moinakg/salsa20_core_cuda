@@ -119,13 +119,13 @@ all: build
 
 build: vecCrypt vecCrypt_strm vecCrypt_strm_cpuxor
 
-vecCrypt.o: vecCrypt.cu
+vecCrypt.o: vecCrypt.cu common.h
 	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
 
-vecCrypt_strm.o: vecCrypt_strm.cu
+vecCrypt_strm.o: vecCrypt_strm.cu common.h
 	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
 
-vecCrypt_strm_cpuxor.o: vecCrypt_strm_cpuxor.cu
+vecCrypt_strm_cpuxor.o: vecCrypt_strm_cpuxor.cu common.h
 	$(NVCC) $(NVCCFLAGS) $(EXTRA_NVCCFLAGS) -I$(CUDA_INC_PATH) $(GENCODE_FLAGS) -o $@ -c $<
 
 stream.o: stream.s
