@@ -477,24 +477,36 @@ int main(int argc, char** argv)
         checkCudaErrors( cudaMemcpyAsync(d_A1, h_A1, sz1_bytes, cudaMemcpyHostToDevice, strm[i%NUM_STREAMS]) );
         blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
         VecCrypt<<<blocksPerGrid, threadsPerBlock, 0, strm[i%NUM_STREAMS]>>>(d_A1, N, sz1, v_nonce, blks_per_chunk, blk_off);
+
+        /*
+         * Devices with CUDA Capability 2 or greater have at least 2 copy engines and can handle multiple
+         * transfers at a time.
+         */
+        if (deviceProp.major >= 2)
+            checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_STREAMS]) );
         h_A1 += sz1_bytes;
         d_A1 += sz1_bytes;
         blk_off += sz1;
     }
 
-    h_A1 = h_A;
-    d_A1 = d_A;
-    for (i = 0; i < NUM_STREAMS; i++) {
-        if (i == NUM_STREAMS - 1) {
-            sz1 = NBLKS/NUM_STREAMS * NUM_STREAMS;
-            sz1 = NBLKS/NUM_STREAMS + (NBLKS - sz1);
-        } else {
-            sz1 = NBLKS/NUM_STREAMS;
+    /*
+     * Need to issue separate copy back requests so as not to jam the single copy engine.
+     */
+    if (deviceProp.major < 2) {
+        h_A1 = h_A;
+        d_A1 = d_A;
+        for (i = 0; i < NUM_STREAMS; i++) {
+            if (i == NUM_STREAMS - 1) {
+                sz1 = NBLKS/NUM_STREAMS * NUM_STREAMS;
+                sz1 = NBLKS/NUM_STREAMS + (NBLKS - sz1);
+            } else {
+                sz1 = NBLKS/NUM_STREAMS;
+            }
+            sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
+            checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_STREAMS]) );
+            h_A1 += sz1_bytes;
+            d_A1 += sz1_bytes;
         }
-        sz1_bytes = sz1 * XSALSA20_BLOCKSZ;
-        checkCudaErrors( cudaMemcpyAsync(h_A1, d_A1, sz1_bytes, cudaMemcpyDeviceToHost, strm[i%NUM_STREAMS]) );
-        h_A1 += sz1_bytes;
-        d_A1 += sz1_bytes;
     }
     checkCudaErrors( cudaDeviceSynchronize() );
 
