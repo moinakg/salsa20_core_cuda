@@ -25,6 +25,7 @@
 #include <time.h>
 #include <errno.h>
 #include <pthread.h>
+#include <semaphore.h>
 
 // includes CUDA
 #include <cuda_runtime.h>
@@ -408,8 +409,11 @@ struct tdat {
     unsigned char *h_A1;
     unsigned char *h_B1;
     uint64_t nblks;
+    int quit;
     cudaStream_t strm;
     pthread_t tid;
+    sem_t start;
+    sem_t done;
 };
 
 void *
@@ -417,8 +421,14 @@ proc_buf(void *dat)
 {
     struct tdat *data = (struct tdat *)dat;
 
-    checkCudaErrors( cudaStreamSynchronize(data->strm) );
-    xor_buffer_aligned(data->h_A1, data->h_B1, data->nblks, XSALSA20_BLOCKSZ);
+    while (1) {
+        sem_wait(&(data->start));
+        if (data->quit) break;
+
+        checkCudaErrors( cudaStreamSynchronize(data->strm) );
+        xor_buffer_aligned(data->h_A1, data->h_B1, data->nblks, XSALSA20_BLOCKSZ);
+        sem_post(&(data->done));
+    }
 
     return (NULL);
 }
@@ -448,8 +458,16 @@ int main(int argc, char** argv)
     if (NBLKS % blks_per_chunk) N++;
     size = NBLKS * XSALSA20_BLOCKSZ;
 
-    for (i = 0; i < NUM_STREAMS; i++)
+    /*
+     * Create CUDA streams, CPU side threads and initialize thread data.
+     */
+    for (i = 0; i < NUM_STREAMS; i++) {
         checkCudaErrors( cudaStreamCreate(&strm[i]) );
+        t_data[i].quit = 0;
+        sem_init(&(t_data[i].start), 0, 0);
+        sem_init(&(t_data[i].done), 0, 0);
+        pthread_create(&(t_data[i].tid), NULL, proc_buf, (void *)&(t_data[i]));
+    }
 
     // Allocate input vectors h_A and h_B in host memory
     pinned = 1;
@@ -478,15 +496,17 @@ int main(int argc, char** argv)
     printf("Allocating device buffer\n");
     checkCudaErrors( cudaMalloc((void**)&d_A, size) );
 
-    // Copy vectors from host memory to device memory
     printf("Starting GPU Calls\n");
-
+    // Copy algorithm parameters to GPU.
     strt = get_wtime_millis();
     checkCudaErrors( cudaMemcpyToSymbol(key, k, XSALSA20_CRYPTO_KEYBYTES, 0, cudaMemcpyHostToDevice) );
     checkCudaErrors( cudaMemcpyToSymbol(sigma, hsigma, 16, 0, cudaMemcpyHostToDevice) );
     v_nonce = load_littleendian64(h_nonce);
     threadsPerBlock = THREADS_PER_BLOCK;
 
+    /*
+     * Launch kernels on the device per stream with overlapped transfer and CPU side processing.
+     */
     h_A1 = h_A;
     d_A1 = d_A;
     h_B1 = h_B;
@@ -509,7 +529,7 @@ int main(int argc, char** argv)
         t_data[i].h_B1 = h_B1;
         t_data[i].nblks = sz1;
         t_data[i].strm = strm[i%NUM_STREAMS];
-        pthread_create(&(t_data[i].tid), NULL, proc_buf, (void *)&(t_data[i]));
+        sem_post(&(t_data[i].start));
 
         h_A1 += sz1_bytes;
         d_A1 += sz1_bytes;
@@ -517,9 +537,11 @@ int main(int argc, char** argv)
         blk_off += sz1;
     }
 
-    checkCudaErrors( cudaDeviceSynchronize() );
+    /*
+     * Each thread does a cudaStreamSynchronize() so we do not need a device synchronize here.
+     */
     for (i = 0; i < NUM_STREAMS; i++)
-        pthread_join(t_data[i].tid, NULL);
+        sem_wait(&(t_data[i].done));
 
     en = get_wtime_millis();
     gpuTime1 = (en - strt);
@@ -547,8 +569,21 @@ int main(int argc, char** argv)
     en = get_wtime_millis();
     cpuTime2 = en - strt;
 
+    /*
+     * Clean out keying material on the GPU.
+     */
+    memset(k, 0, XSALSA20_CRYPTO_KEYBYTES);
+    checkCudaErrors( cudaMemcpyToSymbol(key, k, XSALSA20_CRYPTO_KEYBYTES, 0, cudaMemcpyHostToDevice) );
     CleanupResources();
-    free(h_B);
+
+    /*
+     * Signal all the threads to quit.
+     */
+    for (i = 0; i < NUM_STREAMS; i++) {
+        t_data[i].quit = 1;
+        sem_post(&(t_data[i].start));
+        pthread_join(t_data[i].tid, NULL);
+    }
 
     if (pinned)
         printf("Data transfer was pinned\n");
@@ -579,6 +614,8 @@ void CleanupResources(void)
         else
             free(h_A);
     }
+    if (h_B)
+        free(h_B);
 
     cudaDeviceReset();
 }

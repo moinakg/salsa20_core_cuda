@@ -504,8 +504,12 @@ int main(int argc, char** argv)
     en = get_wtime_millis();
     cpuTime2 = en - strt;
 
+    /*
+     * Clean out keying material on the GPU.
+     */
+    memset(k, 0, XSALSA20_CRYPTO_KEYBYTES);
+    checkCudaErrors( cudaMemcpyToSymbol(key, k, XSALSA20_CRYPTO_KEYBYTES, 0, cudaMemcpyHostToDevice) );
     CleanupResources();
-    free(h_B);
 
     if (pinned)
         printf("Data transfer time (pinned mem)         : %f msec\n", gpuTime1);
@@ -537,6 +541,8 @@ void CleanupResources(void)
         else
             free(h_A);
     }
+    if (h_B)
+        free(h_B);
 
     cudaDeviceReset();
 }
